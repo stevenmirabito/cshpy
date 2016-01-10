@@ -1,73 +1,68 @@
-import ldap as pyldap
-from datetime import datetime, date
-from copy import deepcopy
-from collections import namedtuple
-from member import Member
+import ssl
+import ldap3 as ldap
+from csh.member import Member
 
 USERS = 'ou=Users,dc=csh,dc=rit,dc=edu'
 GROUPS = 'ou=Groups,dc=csh,dc=rit,dc=edu'
 COMMITTEES = 'ou=Committees,dc=csh,dc=rit,dc=edu'
 APPS = 'ou=Apps,dc=csh,dc=rit,dc=edu'
 
-class LDAP:
 
-    def __init__(self, user, password,
-                 host='ldaps://ldap.csh.rit.edu:636',
-                 base=USERS,
-                 bind=APPS,
-                 app=False,
-                 objects=False):
+class LDAP:
+    def __init__(self, user='', password='', host='ldap.csh.rit.edu', base=USERS, app=False, objects=False, debug=False):
+        """
+        Initializes object and binds to the specified LDAP server
+        :param user: LDAP user to bind as
+        :param password: Password for LDAP user
+        :param host: LDAP server hostname
+        :param base: Distinguished name base for user
+        :param app: Connect as an app (boolean)
+        :param objects: Objects
+        :param debug: Activate debug mode (boolean)
+        :return: None
+        """
         self.host = host
         self.base = base
-        self.ldap_conn = pyldap.initialize(host)
-        self.ldap_conn.set_option(pyldap.OPT_X_TLS_DEMAND, True)
-        self.ldap_conn.set_option(pyldap.OPT_DEBUG_LEVEL, 255)
         self.objects = objects
+        self.debug = debug
 
-        if app:
-            self.ldap_conn.simple_bind('cn={},{}'.format(user, APPS),
-                                       password)
+        # Configure the LDAP server
+        tls = ldap.Tls(validate=ssl.CERT_REQUIRED, version=ssl.PROTOCOL_TLSv1_2)
+        self.ldap_server = ldap.Server(self.host, use_ssl=True, tls=tls)
+
+        if user == '':
+            # No user specified, use Kerberos via SASL/GSSAPI to bind
+            self.ldap_conn = ldap.Connection(self.ldap_server, authentication=ldap.SASL, sasl_mechanism='GSSAPI')
         else:
-            try:
-                auth = pyldap.sasl.gssapi("")
+            # Use simple authentication
+            if app:
+                # Use the APPS base rather than USERS or whatever was passed
+                self.base = APPS
 
-                self.ldap_conn.sasl_interactive_bind_s("", auth)
-                self.ldap_conn.set_option(pyldap.OPT_DEBUG_LEVEL, 0)
-            except pyldap.LDAPError, e:
-                print 'Are you sure you\'ve run kinit?'
-                print e
+            # Construct user's distinguished name
+            ldap_user_dn = 'uid={},{}'.format(user, self.base)
 
-    def members(self, uid="*"):
-        """ members() issues an ldap query for all users, and returns a dict
-            for each matching entry. This can be quite slow, and takes roughly
-            3s to complete. You may optionally restrict the scope by specifying
-            a uid, which is roughly equivalent to a search(uid='foo')
-        """
-        entries = self.search(uid='*')
-        if self.objects:
-            return self.memberObjects(entries)
-        result = []
-        for entry in entries:
-            result.append(entry[1])
-        return result
+            # Set up the connection
+            self.ldap_conn = ldap.Connection(self.ldap_server, user=ldap_user_dn, password=password)
 
-    def member(self, user):
-        """ Returns a user as a dict of attributes
-        """
+        # Attempt to bind
         try:
-            member = self.search(uid=user)[0]
-        except IndexError:
-            return None
-        if self.objects:
-            return member
-        return member[1]
+            self.ldap_conn.bind()
+        except ldap.LDAPException as e:
+            print("Unable to bind to LDAP: " + str(e))
+            if self.debug:
+                print("[DEBUG] Connection details: " + str(self.ldap_conn))
+
+    @staticmethod
+    def _trim_result(result):
+        return [x[1] for x in result]
 
     def eboard(self):
-        """ Returns a list of eboard members formatted as a search
-            inserts an extra ['commmittee'] attribute
         """
-        # self.committee used as base because that's where eboard
-        # info is kept
+        Returns a list of eboard members formatted as a search and inserts an extra ['committee'] attribute
+        :return: List of csh.Member objects
+        """
+        # self.committee used as base because that's where eboard info is kept
         committees = self.search(base=COMMITTEES, cn='*')
         directors = []
         for committee in committees:
@@ -75,103 +70,158 @@ class LDAP:
                 director = self.search(dn=head)[0]
                 director[1]['committee'] = committee[1]['cn'][0]
                 directors.append(director)
+
         if self.objects:
-            return self.memberObjects(directors)
+            return self.member_objects(directors)
+
         return directors
 
     def group(self, group_cn):
+        """
+        Searches for and returns a list of all the members who belong to a certain group.
+        :param group_cn: Group common name
+        :return: List of csh.Member objects
+        """
         members = self.search(base=GROUPS, cn=group_cn)
+
         if len(members) == 0:
             return members
         else:
             member_dns = members[0][1]['member']
+
         members = []
         for member_dn in member_dns:
             members.append(self.search(dn=member_dn)[0])
+
         if self.objects:
-            return self.memberObjects(members)
+            return self.member_objects(members)
+
         return members
 
-    def getGroups(self, member_dn):
-        searchResult = self.search(base=GROUPS, member=member_dn)
-        if len(searchResult) == 0:
-            return []
-
-        groupList = []
-        for group in searchResult:
-            groupList.append(group[1]['cn'][0])
-        return groupList
-
-    def drinkAdmins(self):
-        """ Returns a list of drink admins uids
+    def get_drink_admins(self):
+        """
+        Searches for all drink admins.
+        :return: List of drink admin UIDs
         """
         admins = self.group('drink')
         return admins
 
-    def rtps(self):
+    def get_groups(self, member_dn):
+        """
+        Returns a list of groups that a member belongs to.
+        :param member_dn: Distinguished name of member
+        :return: List of groups (as strings)
+        """
+        search_result = self.search(base=GROUPS, member=member_dn)
+
+        if len(search_result) == 0:
+            return []
+
+        group_list = []
+        for group in search_result:
+            group_list.append(group[1]['cn'][0])
+
+        return group_list
+
+    def get_rtps(self):
+        """
+        Searches for all RTPs
+        :return: List of RTP UIDs
+        """
         rtps = self.group('rtp')
         return rtps
 
-    def trimResult(self, result):
-        return [x[1] for x in result]
-
-    def search(self, base=False, trim=False, **kwargs):
-        """ Returns matching entries for search in ldap
-            structured as [(dn, {attributes})]
-            UNLESS searching by dn, in which case the first match
-            is returned
+    def member(self, uid):
         """
-        scope = pyldap.SCOPE_SUBTREE
-        if not base:
-            base = USERS
+        Searches LDAP for a user
+        :param uid: UID to search for
+        :return: Dictionary of attributes
+        """
+        try:
+            member = self.search(uid=uid)[0]
+        except IndexError:
+            return None
 
-        filterstr = ''
-        for key, value in kwargs.iteritems():
-            filterstr += '({0}={1})'.format(key, value)
+        if self.objects:
+            return member
+
+        return member[1]
+
+    def members(self, uid='*'):
+        """
+        Issues an LDAP query for all users, and returns a dict for each matching entry.
+        This can be quite slow, and takes roughly 3s to complete. You may optionally
+        restrict the scope by specifying a uid, which is roughly equivalent to a search(uid='foo').
+        :param uid: UID to search for (optional)
+        :return: Dictionary of csh.Member objects
+        """
+        entries = self.search(uid)
+
+        if self.objects:
+            return self.member_objects(entries)
+
+        result = []
+        for entry in entries:
+            result.append(entry[1])
+
+        return result
+
+    def member_objects(self, search_results):
+        results = []
+
+        for result in search_results:
+            new_member = Member(result, ldap=self)
+            results.append(new_member)
+
+        return results
+
+    def modify(self, uid, base=USERS, **kwargs):
+        dn = 'uid={},{}'.format(uid, base)
+        old_attrs = self.member(uid)
+        mods_dict = {}
+
+        for field, value in kwargs.items():
+            if field in old_attrs:
+                mods_dict[field] = [(ldap.MODIFY_REPLACE, [value])]
+
+        self.ldap_conn.modify(dn, mods_dict)
+
+    def search(self, base=USERS, trim=False, **kwargs):
+        """
+        Returns matching entries for search in ldap structured as [(dn, {attributes})]
+        UNLESS searching by dn, in which case the first match is returned.
+        :param base: Distinguished name base to use (optional, default is USERS)
+        :param trim: Return a trimmed result (boolean)
+        :return: Returns a list of LDAP search results
+        """
+        search_filter = ''
+        for key, value in kwargs.items():
+            search_filter += '({0}={1})'.format(key, value)
+
             if key == 'dn':
-                filterstr = '(objectClass=*)'
+                search_filter = '(objectClass=*)'
                 base = value
-                scope = pyldap.SCOPE_BASE
                 break
 
         if len(kwargs) > 1:
-            filterstr = '(&'+filterstr+')'
+            search_filter = '(&' + search_filter + ')'
 
-        result = self.ldap_conn.search_s(base,
-                                         pyldap.SCOPE_SUBTREE,
-                                         filterstr,
-                                         ['*', '+'])
+        result = self.ldap_conn.search(search_base=base, search_filter=search_filter)
         if base == USERS:
             for member in result:
-                groups = self.getGroups(member[0])
+                print(member.entry_to_json())
+                groups = self.get_groups(member[0])
                 member[1]['groups'] = groups
+
                 if 'eboard' in member[1]['groups']:
-                    eboard_search = self.search(base=COMMITTEES,
-                                                head=member[0])
+                    eboard_search = self.search(base=COMMITTEES, head=member[0])
+
                     if eboard_search:
                         member[1]['committee'] = eboard_search[0][1]['cn'][0]
+
             if self.objects:
-                return self.memberObjects(result)
-        finalResult = self.trimResult(result) if trim else result
-        return finalResult
+                return self.member_objects(result)
 
-    def modify(self, uid, base=False, **kwargs):
-        if not base:
-            base = USERS
-        dn = 'uid={},{}'.format(uid, USERS)
-        old_attrs = self.member(uid)
-        new_attrs = deepcopy(old_attrs)
+        final_result = self._trim_result(result) if trim else result
 
-        for field, value in kwargs.iteritems():
-            if field in old_attrs:
-                new_attrs[field] = [str(value)]
-        modlist = pyldap.modlist.modifyModlist(old_attrs, new_attrs)
-
-        self.ldap_conn.modify_s(dn, modlist)
-
-    def memberObjects(self, searchResults):
-        results = []
-        for result in searchResults:
-            newMember = Member(result, ldap=self)
-            results.append(newMember)
-        return results
+        return final_result
