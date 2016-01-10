@@ -1,6 +1,8 @@
-import csh.utils
+from datetime import date
+from csh import utils
 
-class Member(object):
+
+class Member:
     def __init__(self, member, ldap=None):
         """ Creates and returns a member object from which LDAP fields
             are accessible as properties. If you supply an LDAP connection,
@@ -18,7 +20,7 @@ class Member(object):
         """ Accesses the internal dictionary representation of
             a member and returns whatever data type it represents.
         """
-        if (attribute in self.specialFields):
+        if attribute in self.specialFields:
             return object.__getattribute__(self, attribute)
         try:
             # Grab the object at that key. It will be a list,
@@ -44,7 +46,7 @@ class Member(object):
             access the internal ldap connection from the constructor
             and modify that parameter.
         """
-        if (attribute in self.specialFields):
+        if attribute in self.specialFields:
             return object.__setattr__(self, attribute, value)
         if attribute in ("memberDict", "ldap"):
             object.__setattr__(self, attribute, value)
@@ -60,37 +62,37 @@ class Member(object):
         """
         return self.memberDict.keys()
 
-    def isActive(self):
+    def is_active(self):
         """ Is the user active?
         """
         return bool(self.active)
 
-    def isAlumni(self):
+    def is_alumni(self):
         """ Is the user an alumnus/a?
         """
         return bool(self.alumni)
 
-    def isDrinkAdmin(self):
+    def is_drink_admin(self):
         """ Is the user a drink admin?
         """
         return bool(self.drinkAdmin)
 
-    def isOnFloor(self):
+    def is_on_floor(self):
         """ Is the user on floor?
         """
         return bool(self.onfloor)
 
-    def isEboard(self):
+    def is_eboard(self):
         """ Is the user on Eboard?
         """
         return 'eboard' in self.groups
 
-    def isRTP(self):
+    def is_rtp(self):
         """ Is the user an RTP?
         """
         return 'rtp' in self.groups
 
-    def isBirthday(self):
+    def is_birthday(self):
         """ Is it the user's birthday today?
         """
         if not self.birthday:
@@ -100,7 +102,7 @@ class Member(object):
         return (birthday.month == today.month and
                 birthday.day == today.day)
 
-    def birthdate(self):
+    def birth_date(self):
         """ Converts the user's birthday (if it exists) to a datetime.date
             object that can easily be compared with other dates.
         """
@@ -108,7 +110,7 @@ class Member(object):
             return None
         return utils.date_from_ldap_timestamp(self.birthday)
 
-    def joindate(self):
+    def join_date(self):
         """ Converts the user's join date (if it exists) to a datetime.date
             object that can easily be compared with other dates.
         """
@@ -140,7 +142,7 @@ class Member(object):
             return
         self.memberDict = self.ldap.member(self.uid)
 
-    def fullName(self):
+    def full_name(self):
         """ Returns a reliable full name (firstName lastName) for every
             member (as of the writing of this comment.)
         """
