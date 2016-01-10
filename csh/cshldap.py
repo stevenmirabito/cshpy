@@ -201,7 +201,17 @@ class LDAP:
         """
         search_filter = ''
         for key, value in kwargs.items():
-            search_filter += '({0}={1})'.format(key, value)
+            if isinstance(value, list):
+                search_filter += '(|'
+                for term in value:
+                    term = term.replace('(', '\\(')
+                    term = term.replace(')', '\\)')
+                    search_filter += '({0}={1})'.format(key, term)
+                search_filter += ')'
+            else:
+                value = value.replace('(', '\\(')
+                value = value.replace(')', '\\)')
+                search_filter += '({0}={1})'.format(key, value)
 
             if key == 'dn':
                 search_filter = '(objectClass=*)'
