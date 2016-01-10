@@ -17,7 +17,7 @@ class LDAP:
         :param host: LDAP server hostname
         :param base: Distinguished name base for user
         :param app: Connect as an app (boolean)
-        :param objects: Objects
+        :param objects: Convert results to csh.Member objects
         :param debug: Activate debug mode (boolean)
         :return: None
         """
@@ -27,7 +27,7 @@ class LDAP:
         self.debug = debug
 
         # Configure the LDAP server
-        tls = ldap.Tls(validate=ssl.CERT_REQUIRED, version=ssl.PROTOCOL_TLSv1_2)
+        tls = ldap.Tls(validate=ssl.CERT_NONE, version=ssl.PROTOCOL_TLSv1)
         self.ldap_server = ldap.Server(self.host, use_ssl=True, tls=tls)
 
         if user == '':
@@ -82,16 +82,16 @@ class LDAP:
         :param group_cn: Group common name
         :return: List of csh.Member objects
         """
-        members = self.search(base=GROUPS, cn=group_cn)
+        group = self.search(base=GROUPS, cn=group_cn)
 
-        if len(members) == 0:
-            return members
+        if len(group) == 0:
+            return []
         else:
-            member_dns = members[0][1]['member']
+            group_members = group[0]['attributes']['member']
 
         members = []
-        for member_dn in member_dns:
-            members.append(self.search(dn=member_dn)[0])
+        for member in group_members:
+            members.append(self.search(dn=member))
 
         if self.objects:
             return self.member_objects(members)
@@ -119,7 +119,12 @@ class LDAP:
 
         group_list = []
         for group in search_result:
-            group_list.append(group[1]['cn'][0])
+            group_cn = group['attributes']['cn'][0]
+
+            if self.debug:
+                print("[DEBUG] User {} belongs to group: {}".format(member_dn, group_cn))
+
+            group_list.append(group_cn)
 
         return group_list
 
@@ -206,22 +211,27 @@ class LDAP:
         if len(kwargs) > 1:
             search_filter = '(&' + search_filter + ')'
 
-        result = self.ldap_conn.search(search_base=base, search_filter=search_filter)
-        if base == USERS:
-            for member in result:
-                print(member.entry_to_json())
-                groups = self.get_groups(member[0])
-                member[1]['groups'] = groups
+        result = self.ldap_conn.search(search_base=base, search_filter=search_filter, attributes=['*', '+'])
+        if result:
+            if base == USERS:
+                for member in self.ldap_conn.response:
+                    if self.debug:
+                        print("[DEBUG] Entry: " + str(member))
 
-                if 'eboard' in member[1]['groups']:
-                    eboard_search = self.search(base=COMMITTEES, head=member[0])
+                    groups = self.get_groups(member['dn'])
+                    member['attributes']['groups'] = groups
 
-                    if eboard_search:
-                        member[1]['committee'] = eboard_search[0][1]['cn'][0]
+                    if 'eboard' in member['attributes']['groups']:
+                        eboard_search = self.search(base=COMMITTEES, head=member['dn'])
+
+                        if eboard_search:
+                            member.committee = self.ldap_conn.reponse[0]['attributes']['cn']
 
             if self.objects:
-                return self.member_objects(result)
+                return self.member_objects(self.ldap_conn.response)
 
-        final_result = self._trim_result(result) if trim else result
+            final_result = self._trim_result(self.ldap_conn.response) if trim else self.ldap_conn.response
+        else:
+            final_result = []
 
         return final_result
